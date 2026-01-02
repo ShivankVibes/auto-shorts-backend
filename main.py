@@ -1,43 +1,68 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import whisper
 import subprocess
-import requests
+import os
 
 app = FastAPI()
+
+# CORS (needed for frontend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 model = whisper.load_model("base")
 
+class VideoRequest(BaseModel):
+    video_url: str
+    shorts: int = 3
+    length: int = 30
+
 @app.post("/process")
-def process_video(video_url: str, shorts: int = 3, length: int = 30):
+def process(req: VideoRequest):
 
-    # 1. Download video (yt-dlp)
-    subprocess.run(["yt-dlp", "-f", "mp4", video_url, "-o", "video.mp4"])
+    # Clean old files
+    for f in os.listdir():
+        if f.endswith(".mp4"):
+            os.remove(f)
 
-    # 2. Transcribe
+    # Download video
+    subprocess.run([
+        "yt-dlp",
+        "-f", "mp4",
+        req.video_url,
+        "-o", "video.mp4"
+    ], check=True)
+
+    # Transcribe
     result = model.transcribe("video.mp4")
-
-    # 3. Pick best timestamps (simple logic)
-    segments = result["segments"]
-    picks = segments[:shorts]
+    segments = result["segments"][:req.shorts]
 
     outputs = []
 
-    for i, seg in enumerate(picks):
+    for i, seg in enumerate(segments):
         start = max(0, seg["start"])
-        subprocess.run([
-            "ffmpeg", "-i", "video.mp4",
-            "-ss", str(start),
-            "-t", str(length),
-            f"short_{i}.mp4"
-        ])
 
-        # 4. Generate title (Groq / LLM)
-        title = f"Viral Moment #{i+1}"
-        desc = f"Best part from the video\n#shorts #viral"
+        out_file = f"short_{i+1}.mp4"
+
+        subprocess.run([
+            "ffmpeg",
+            "-y",
+            "-i", "video.mp4",
+            "-ss", str(start),
+            "-t", str(req.length),
+            "-vf", "scale=1080:1920",
+            out_file
+        ], check=True)
 
         outputs.append({
-            "file": f"short_{i}.mp4",
-            "title": title,
-            "description": desc
+            "file": out_file,
+            "title": f"Viral Moment #{i+1}",
+            "description": "Best moment from the video\n#shorts #viral"
         })
 
     return outputs
